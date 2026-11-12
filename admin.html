@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Claves · Pizarra de la Casa</title>
+  <link rel="icon" href="icono.png">
+  <link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<main>
+  <header>
+    <img src="icono.png" alt="">
+    <div>
+      <h1>Claves de acceso</h1>
+      <p class="muted" style="margin:0">Cada clave sirve para crear una casa. Los familiares entran con el código de la casa.</p>
+    </div>
+  </header>
+
+  <section id="fuera">
+    <p>Entra con la cuenta de Google de la administradora.</p>
+    <button id="entrar">Entrar con Google</button>
+    <p id="error" class="muted"></p>
+  </section>
+
+  <section id="dentro" hidden>
+    <p class="muted">Conectada como <strong id="correo"></strong> · <a href="#" id="salir">Salir</a></p>
+    <div id="nueva" class="aviso" hidden></div>
+    <div class="card">
+      <form id="crear">
+        <input id="nombre" placeholder="¿Para quién es?" required maxlength="60">
+        <input id="notas" placeholder="Notas (opcional)" maxlength="200">
+        <button>Crear clave</button>
+      </form>
+    </div>
+    <p class="muted">Si desactivas una clave, esa casa deja de funcionar al instante en todos sus teléfonos.</p>
+    <div class="tabla">
+      <table>
+        <thead><tr><th>Clave</th><th>Para</th><th>Notas</th><th>Estado</th><th>Usada</th><th></th></tr></thead>
+        <tbody id="filas"><tr><td colspan="6">Cargando…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>© 2026 Gabriela Rosado · <a href="index.html">Pizarra de la Casa</a></footer>
+</main>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js";
+  import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js";
+  import { getFirestore, collection, doc, getDoc, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js";
+
+  const app = initializeApp({
+    apiKey: "AIzaSyBP6EUXDWciwjUyPNXf3nFUQE2huos4Pmg",
+    authDomain: "pizarra-de-la-casa.firebaseapp.com",
+    projectId: "pizarra-de-la-casa",
+    appId: "1:725586769354:web:905d3f47448504d14b8b33",
+  });
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const ALFABETO = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  const trozo = () => Array.from(crypto.getRandomValues(new Uint32Array(4)), (n) => ALFABETO[n % ALFABETO.length]).join("");
+  let cancelar = null;
+
+  $("entrar").onclick = async () => {
+    $("error").textContent = "";
+    try { await signInWithPopup(auth, new GoogleAuthProvider()); }
+    catch (e) { $("error").textContent = "No se pudo entrar: " + (e.code || e.message); }
+  };
+  $("salir").onclick = (e) => { e.preventDefault(); signOut(auth); };
+
+  onAuthStateChanged(auth, (u) => {
+    if (cancelar) { cancelar(); cancelar = null; }
+    $("fuera").hidden = !!u;
+    $("dentro").hidden = !u;
+    if (!u) return;
+    $("correo").textContent = u.email;
+    cancelar = onSnapshot(query(collection(db, "claves"), orderBy("creadaEn", "desc")), (s) => {
+      $("filas").innerHTML = s.docs.map((d) => {
+        const c = d.data();
+        const activa = c.estado === "ACTIVA";
+        const usada = c.usadaEn ? c.usadaEn.toDate().toLocaleString("es-EC", { dateStyle: "short", timeStyle: "short" }) : "Sin usar";
+        return `<tr><td class="mono">${esc(d.id)}</td><td>${esc(c.nombre)}</td><td>${esc(c.notas)}</td>
+          <td><span class="estado ${activa ? "ok" : "off"}">${activa ? "Activa" : "Desactivada"}</span></td><td>${usada}</td>
+          <td><button class="sec" data-clave="${esc(d.id)}" data-estado="${activa ? "DESACTIVADA" : "ACTIVA"}">${activa ? "Desactivar" : "Reactivar"}</button></td></tr>`;
+      }).join("") || '<tr><td colspan="6">Todavía no hay claves.</td></tr>';
+    }, (e) => {
+      $("filas").innerHTML = `<tr><td colspan="6">Esta cuenta no puede administrar claves (${esc(e.code)}).</td></tr>`;
+    });
+  });
+
+  $("filas").onclick = async (e) => {
+    const b = e.target.closest("button[data-clave]");
+    if (!b) return;
+    if (b.dataset.estado === "DESACTIVADA" && !confirmarEnPagina(b)) return;
+    await updateDoc(doc(db, "claves", b.dataset.clave), { estado: b.dataset.estado });
+  };
+  // Confirmación sin diálogos del navegador: el primer toque pide confirmar
+  function confirmarEnPagina(b) {
+    if (b.dataset.confirmar) return true;
+    b.dataset.confirmar = "1";
+    b.textContent = "¿Seguro? Toca otra vez";
+    setTimeout(() => { delete b.dataset.confirmar; b.textContent = "Desactivar"; }, 4000);
+    return false;
+  }
+
+  $("crear").onsubmit = async (e) => {
+    e.preventDefault();
+    let clave = `PZ-${trozo()}-${trozo()}`;
+    while ((await getDoc(doc(db, "claves", clave))).exists()) clave = `PZ-${trozo()}-${trozo()}`;
+    await setDoc(doc(db, "claves", clave), {
+      nombre: $("nombre").value.trim(), notas: $("notas").value.trim(), estado: "ACTIVA", casaId: null, usadaEn: null, creadaEn: serverTimestamp(),
+    });
+    $("nueva").hidden = false;
+    $("nueva").innerHTML = `Clave nueva para <strong>${esc($("nombre").value.trim())}</strong>: <span class="mono" style="font-size:1.2em">${clave}</span> — envíasela junto con la app.`;
+    e.target.reset();
+  };
+</script>
+</body>
+</html>
